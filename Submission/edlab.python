@@ -1,0 +1,315 @@
+# EdLab Research Task 2
+# Henry Williams
+# February 2019
+from sklearn.cluster import KMeans
+from sklearn.cluster import AgglomerativeClustering
+from sklearn.cluster import MeanShift, estimate_bandwidth
+import scipy.cluster.hierarchy as sch
+
+from mpl_toolkits.mplot3d import Axes3D
+from collections import OrderedDict
+from textwrap import wrap
+from itertools import cycle
+import matplotlib.pyplot as plt
+import matplotlib.animation as animation
+import numpy as np
+import json
+import re
+import ffmpeg
+
+np.random.seed(19680801)
+
+def parse_data(filename):
+	with open(filename) as handle:
+		text_data = handle.read()
+		text_data = re.sub(r'[^"](#.+)', ' ', text_data)
+		text_data = re.sub(r'^(#.+)', ' ', text_data)
+		text_data = '[' + re.sub(r'\}\s\{', '},{', text_data) + ']'
+		json_data = json.loads(text_data)
+	return json_data
+
+def time_position_data(json_data):
+	times = []
+	for entry in json_data:
+		times.append(entry["positionTS"])
+	times = sorted(list(set(times)))
+	tpos = OrderedDict()
+	for time in times:
+		tpos[time] = 0
+	for entry in json_data:
+		tpos[entry["positionTS"]] = [entry["id"], entry["smoothedPosition"]]
+	return tpos
+
+def get_tags(json_data):
+	tags = set()
+	for entry in json_data:
+		tags.add(entry["id"])
+	return list(tags)
+
+def generate_colors(tags):
+	id_colors = {}
+	for tag in tags:
+		id_colors[tag] = np.random.rand(1)[0]
+	return id_colors
+
+def all_position_sequence(tpos, id_colors):
+	positions = np.empty((1,3))
+
+	for pos in tpos.values():
+		if pos[1] != None:
+			pos[1][2] = id_colors[pos[0]]
+			positions = np.append(positions, [pos[1]], axis=0)
+
+	return positions
+
+def tag_position_sequence(tag, tpos, id_colors):
+	positions = np.empty((1,3))
+
+	for pos in tpos.values():
+		if pos[1] != None and pos[0] == tag:
+			pos[1][2] = id_colors[pos[0]]
+			positions = np.append(positions, [pos[1]], axis=0)
+
+	return positions
+
+def time_position_sequence(interval, tpos, id_colors):
+	positions = np.empty((1,3))
+
+	for time in tpos.keys():
+		if interval[0] < time and time < interval[1]:
+			if tpos[time][1] != None:
+				tpos[time][1][2] = id_colors[tpos[time][0]]
+				positions = np.append(positions, [tpos[time][1]], axis=0)
+
+	return positions
+
+def points_scatterplot(positions, tag="All"):
+	fig = plt.figure()
+	ax = fig.add_subplot(111)
+	ax.set_xbound(lower=0, upper=30)
+	ax.set_ybound(lower=-10, upper=15)
+
+	
+	xs = positions[:,0]
+	ys = positions[:,1]
+	colors = positions[:,2]
+
+	ax.scatter(xs, ys, c=colors, cmap=plt.get_cmap('hsv'), marker="o")
+
+	ax = plt.gca()
+	ax.set_xlim([0,30])
+	ax.set_ylim([-10,15])
+	ax.set_xlabel('X Position')
+	ax.set_ylabel('Y Position')
+	plt.title(f"Scatterplot of {tag} Positions")
+	ax.legend()
+	ax.grid(True)
+
+	plt.savefig(f"{tag}_scatterplot.png")
+
+def points_heatmap(positions, tag="All"):
+	xs = positions[:,0]
+	ys = positions[:,1]
+
+	heatmap, xedges, yedges = np.histogram2d(xs, ys, bins=20)
+	extent = [0, 30, -10, 15]
+
+	plt.clf()
+	plt.imshow(heatmap.T, extent=extent, origin='lower')
+	
+	plt.xlabel('X Position')
+	plt.ylabel('Y Position')
+	plt.title(f"Heatmap of {tag} Positions")
+	
+	plt.savefig(f"{tag}_heatmap.png")
+
+def all_scatterplots(tpos, tags):
+	tag_positions = OrderedDict()
+	for tag in tags:
+		tag_positions[tag] = tag_position_sequence(tag, tpos, generate_colors(tags))
+
+	fig, axes = plt.subplots(nrows=2, ncols=13, sharex=True, sharey=True, figsize=(50, 6))
+
+	for i in range(len(list(tag_positions.keys()))):
+		if i <= 12:
+			ax = axes[0,i]
+		else:
+			ax = axes[1,i-13]
+			ax.set_xlabel('X Position')
+		ax.set_xbound(lower=0, upper=30)
+		ax.set_ybound(lower=-10, upper=15)
+		xs = tag_positions[list(tag_positions.keys())[i]][:,0]
+		ys = tag_positions[list(tag_positions.keys())[i]][:,1]
+		colors = tag_positions[list(tag_positions.keys())[i]][:,2]
+
+		ax.scatter(xs, ys, c=colors, cmap=plt.get_cmap('hsv'), marker="o")
+		ax.set_ylabel('Y Position')
+		ax.set_title("\n".join(wrap(f"{list(tag_positions.keys())[i]}", 60)))
+	fig.tight_layout()
+	
+	plt.savefig(f"all_scatterplots.png")
+
+def all_heatmaps(tpos, tags):
+	tag_positions = OrderedDict()
+	for tag in tags:
+		tag_positions[tag] = tag_position_sequence(tag, tpos, generate_colors(tags))
+	extent = [0, 30, -10, 15]
+
+	fig, axes = plt.subplots(nrows=2, ncols=13, sharex=True, sharey=True, figsize=(50, 6))
+
+	for i in range(len(list(tag_positions.keys()))):
+		if i <= 12:
+			ax = axes[0,i]
+		else:
+			ax = axes[1,i-13]
+			ax.set_xlabel('X Position')
+		xs = tag_positions[list(tag_positions.keys())[i]][:,0]
+		ys = tag_positions[list(tag_positions.keys())[i]][:,1]
+		heatmap, xedges, yedges = np.histogram2d(xs, ys, bins=20)
+
+		ax.cla()
+		ax.imshow(heatmap.T, extent=extent, origin='lower')
+		ax.set_ylabel('Y Position')
+		ax.set_title("\n".join(wrap(f"{list(tag_positions.keys())[i]}", 60)))
+
+	plt.savefig(f"all_heatmaps.png")
+
+def update_all_scatterplots(i, ax, fig):
+	xs = tag_positions[list(tag_positions.keys())[i]][:,0]
+	ys = tag_positions[list(tag_positions.keys())[i]][:,1]
+	colors = tag_positions[list(tag_positions.keys())[i]][:,2]
+
+	ax.cla()
+	ax.scatter(xs, ys, c=colors, cmap=plt.get_cmap('hsv'), marker="o")
+	ax.set_title(f"Scatterplot of {list(tag_positions.keys())[i]} Positions")
+	ax.set_xbound(lower=0, upper=30)
+	ax.set_ybound(lower=-10, upper=15)
+	ax.set_xlabel('X Position')
+	ax.set_ylabel('Y Position')
+
+	return ax, 
+
+def animate_all_scatterplots(tpos, tags):
+	global tag_positions
+	tag_positions = OrderedDict()
+	for tag in tags:
+		tag_positions[tag] = tag_position_sequence(tag, tpos, generate_colors(tags))
+
+	fig = plt.figure()
+	ax = fig.add_subplot(111)
+	ax.set_xbound(lower=0, upper=30)
+	ax.set_ybound(lower=-10, upper=15)
+	ax.set_xlabel('X Position')
+	ax.set_ylabel('Y Position')
+
+	anim = animation.FuncAnimation(fig, update_all_scatterplots, frames=len(tags), fargs=(ax, fig), interval=500, blit=False)
+	anim.save('ScatterplotAnimation1.mp4', fps=30, extra_args=['-vcodec', 'libx264'])
+
+def update_all_heatmaps(i, ax, fig):
+	xs = tag_positions[list(tag_positions.keys())[i]][:,0]
+	ys = tag_positions[list(tag_positions.keys())[i]][:,1]
+
+	heatmap, xedges, yedges = np.histogram2d(xs, ys, bins=20)
+	extent = [0, 30, -10, 15]
+
+	ax.cla()
+	ax.imshow(heatmap.T, extent=extent, origin='lower')
+	ax.set_title(f"Scatterplot of {list(tag_positions.keys())[i]} Positions")
+	ax.set_xlabel('X Position')
+	ax.set_ylabel('Y Position')
+
+	return ax,
+
+def animate_all_heatmaps(tpos, tags):
+	global tag_positions
+	tag_positions = OrderedDict()
+	for tag in tags:
+		tag_positions[tag] = tag_position_sequence(tag, tpos, generate_colors(tags))
+
+	fig = plt.figure()
+	fig.clf()
+	ax = fig.add_subplot(111)
+	ax.set_xlabel('X Position')
+	ax.set_ylabel('Y Position')
+
+	anim = animation.FuncAnimation(fig, update_all_heatmaps, frames=len(tags), fargs=(ax, fig), interval=500, blit=False)
+	anim.save('HeatmapAnimation3.mp4', fps=30, extra_args=['-vcodec', 'libx264'])
+
+def Kmeans_cluster_positions(positions, tag="All", n_clusters = 4):
+	positions = positions[:,[0,1]]
+	
+	kmeans = KMeans(n_clusters=n_clusters)
+	
+	kmeans.fit(positions)
+	
+	y_km = kmeans.fit_predict(positions)
+
+	colors = cycle('bgrcmykbgrcmykbgrcmykbgrcmyk')
+	for i, col in zip(range(n_clusters), colors):
+		plt.scatter(positions[y_km ==i,0], positions[y_km == i,1], c=col)
+	
+	ax = plt.gca()
+	ax.set_xlim([0,30])
+	ax.set_ylim([-10,15])
+	plt.xlabel('X Position')
+	plt.ylabel('Y Position')
+	plt.title(f"K-means Clustering of {tag} Position Data")
+
+	plt.savefig(f"{tag}kmeans_clust{n_clusters}.png")
+
+def Agglomerative_cluster_positions(positions, tag="All", n_clusters=4):
+	positions = positions[:,[0,1]]
+	
+	dendrogram = sch.dendrogram(sch.linkage(positions, method='ward'))
+
+	hc = AgglomerativeClustering(n_clusters=n_clusters, affinity = 'euclidean', linkage = 'ward')
+
+	y_hc = hc.fit_predict(positions)
+
+	plt.scatter(positions[y_hc ==0,0], positions[y_hc == 0,1], s=100, c='red')
+	plt.scatter(positions[y_hc==1,0], positions[y_hc == 1,1], s=100, c='black')
+	plt.scatter(positions[y_hc ==2,0], positions[y_hc == 2,1], s=100, c='blue')
+	plt.scatter(positions[y_hc ==3,0], positions[y_hc == 3,1], s=100, c='cyan')
+
+	plt.xlabel('X Position')
+	plt.ylabel('Y Position')
+	plt.title(f"Agglomerative Hierarchical Clustering of {tag} Position Data")
+
+	plt.savefig(f"{tag}Agglomerative.png")
+
+def MeanShift_cluster_positions(positions, tag="All"):
+	positions = positions[:,[0,1]]
+
+	bandwidth = estimate_bandwidth(positions, quantile=0.2, n_samples=500)
+
+	ms = MeanShift(bandwidth=bandwidth, bin_seeding=True)
+	ms.fit(positions)
+	labels = ms.labels_
+	cluster_centers = ms.cluster_centers_
+
+	labels_unique = np.unique(labels)
+	n_clusters_ = len(labels_unique)
+
+	fig = plt.figure(1)
+	plt.clf()
+	colors = cycle('bgrcmykbgrcmykbgrcmykbgrcmyk')
+	for k, col in zip(range(n_clusters_), colors):
+	    my_members = labels == k
+	    cluster_center = cluster_centers[k]
+	    plt.plot(positions[my_members, 0], positions[my_members, 1], col + '.')
+	    plt.plot(cluster_center[0], cluster_center[1], 'o', markerfacecolor=col,
+	             markeredgecolor='k', markersize=14)
+	ax = plt.gca()
+	ax.set_xlim([0,30])
+	ax.set_ylim([-10,15])
+	plt.xlabel('X Position')
+	plt.ylabel('Y Position')
+	plt.title(f'MeanShift Clustering of {tag} Position Data, clusters: {n_clusters_}')
+	plt.savefig(f"{tag}MeanShift.png")
+
+	return n_clusters_
+
+json_data = parse_data('LTlocation_20170124_104920.log')
+tpos = time_position_data(json_data)
+tags = get_tags(json_data)
+
